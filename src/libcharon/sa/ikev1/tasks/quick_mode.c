@@ -86,6 +86,18 @@ struct private_quick_mode_t {
 	traffic_selector_t *tsr;
 
 	/**
+	 * Proposed traffic selector of initiator by initiatior
+	 * only in case of mismathicng
+	 */
+	traffic_selector_t *tsi_prop;
+
+	/**
+	 * Proposed traffic selector of responder by initiatior
+	 * only in case of mismathicng
+	 */
+	traffic_selector_t *tsr_prop;
+
+	/**
 	 * Initiators nonce
 	 */
 	chunk_t nonce_i;
@@ -566,10 +578,18 @@ static traffic_selector_t* select_ts(private_quick_mode_t *this, bool local,
 static void add_ts(private_quick_mode_t *this, message_t *message)
 {
 	id_payload_t *id_payload;
+	bool save_prop;
+	traffic_selector_t *tsi = NULL, *tsr = NULL;
 
-	id_payload = id_payload_create_from_ts(this->tsi);
+	save_prop = lib->settings->get_bool(lib->settings,
+								"%s.save_mismatched_ts_initiator_proposal", FALSE, lib->ns);
+
+	tsi = (save_prop && this->tsi_prop) ? this->tsi_prop : this->tsi;
+	tsr = (save_prop && this->tsr_prop) ? this->tsr_prop : this->tsr;
+
+	id_payload = id_payload_create_from_ts(tsi);
 	message->add_payload(message, &id_payload->payload_interface);
-	id_payload = id_payload_create_from_ts(this->tsr);
+	id_payload = id_payload_create_from_ts(tsr);
 	message->add_payload(message, &id_payload->payload_interface);
 }
 
@@ -578,7 +598,7 @@ static void add_ts(private_quick_mode_t *this, message_t *message)
  */
 static bool get_ts(private_quick_mode_t *this, message_t *message)
 {
-	traffic_selector_t *tsi = NULL, *tsr = NULL;
+	traffic_selector_t *tsi = NULL, *tsr = NULL, *tsi_prop = NULL, *tsr_prop = NULL;
 	enumerator_t *enumerator;
 	id_payload_t *id_payload;
 	payload_t *payload;
@@ -627,11 +647,24 @@ static bool get_ts(private_quick_mode_t *this, message_t *message)
 		tsr = traffic_selector_create_from_subnet(hsr->clone(hsr),
 					hsr->get_family(hsr) == AF_INET ? 32 : 128, 0, 0, 65535);
 	}
+	
 	if (this->mode == MODE_TRANSPORT && this->udp &&
 	   (!tsi->is_host(tsi, hsi) || !tsr->is_host(tsr, hsr)))
 	{	/* change TS in case of a NAT in transport mode */
 		DBG2(DBG_IKE, "changing received traffic selectors %R=== %R due to NAT",
 			 tsi, tsr);
+
+		if (!this->initiator)
+		{	/** 
+			 * save proposal to send to initiator back in case 
+			 * of save_mismatched_ts_initiator_proposal setting 
+			 */
+			DBG2(DBG_IKE, "saving initiator traffic selectors proposal %R=== %R ",
+				tsi, tsr);
+			tsi_prop = tsi->clone(tsi);
+			tsr_prop = tsr->clone(tsr);
+		}
+
 		tsi->set_address(tsi, hsi);
 		tsr->set_address(tsr, hsr);
 	}
@@ -662,6 +695,11 @@ static bool get_ts(private_quick_mode_t *this, message_t *message)
 	}
 	else
 	{
+		DESTROY_IF(this->tsi_prop);
+		DESTROY_IF(this->tsr_prop);
+		this->tsi_prop = tsi_prop;
+		this->tsr_prop = tsr_prop;
+
 		this->tsi = tsi;
 		this->tsr = tsr;
 	}
@@ -1428,6 +1466,8 @@ METHOD(task_t, migrate, void,
 	chunk_free(&this->nonce_r);
 	DESTROY_IF(this->tsi);
 	DESTROY_IF(this->tsr);
+	DESTROY_IF(this->tsi_prop);
+	DESTROY_IF(this->tsr_prop);
 	DESTROY_IF(this->proposal);
 	DESTROY_IF(this->child_sa);
 	DESTROY_IF(this->dh);
@@ -1460,6 +1500,8 @@ METHOD(task_t, destroy, void,
 	chunk_free(&this->nonce_r);
 	DESTROY_IF(this->tsi);
 	DESTROY_IF(this->tsr);
+	DESTROY_IF(this->tsi_prop);
+	DESTROY_IF(this->tsr_prop);
 	DESTROY_IF(this->proposal);
 	DESTROY_IF(this->child_sa);
 	DESTROY_IF(this->config);
